@@ -1,0 +1,545 @@
+<?php
+
+/**
+ * Implements hook_menu();
+ */
+function zabbix_db2racktables_menu() {
+  $items['admin/config/system/zabbix/db/racktables'] = array(
+    'title' => 'RackTables',
+    'description' => 'Show statistics info about DB tables',
+    'page callback' => 'zabbix_db2racktables_page',
+    //'page arguments' => array(0, 1, 2, 3),
+    'access arguments' => array('zabbix_db_access'),
+    'type' => MENU_LOCAL_TASK,
+  );
+
+  $items['racktables/ajax/%'] = array(
+    'page callback' => 'zabbix_db2racktables_ajax_router',
+    'page arguments' => array(2, 3),
+    'access arguments' => array('access protected zabbix_db2racktables'), // Protect access
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_permission();
+ */
+function zabbix_db2racktables_permission() {
+  return array(
+    'access protected zabbix_db2racktables' => array(
+      'title' => t('Transfer data from Zabbix to RackTables'),
+      'description' => t('Allow transfer data between Zabbix host information to RackTables'),
+    ),
+  );
+}
+
+/**
+ *  Обращаемся в БД Zabbix и вытякиваем оттуда информацию по хостам
+ *  Connect to DB ZABBIX and get data from table dservices:
+ *   discovery network hosts services
+ *  
+ */
+function zabbix_db2racktables_dbzbx_get_hosts() {
+
+  // 1.   Подключаемся к базе Zabbix и выдираем все IP адреса из обнаружения 
+  $zbxdb_connect = variable_get('zabbix_db_connect', false);
+  // if not setup connection , when  stop
+  if (!$zbxdb_connect) {
+    $content = 'Upsss... you not set connection name.';
+    $content .= l('Set connection name to ZABBIX DB', 'admin/config/system/zabbix/db/settings');
+    return $content;
+  }
+  db_set_active($zbxdb_connect);
+
+  // Сначало выгребаем данные по обнаружению. Т.е. у нас сканируется некий подсети, но не факт,
+  //  что все что будет найдено сканером - стоит на мониторинге и мы знаем названия хостов.
+  // Выбираем признак только по пингам. т.к.  IP адреса повторяются в даблице dservices !!!!!
+  $zbx_ip_scan_0 = db_select('dservices', 'dip')
+      ->fields('dip', array('ip', 'status', 'lastup', 'lastdown', 'type', 'port'))
+      ->execute()
+      ->fetchAll(PDO::FETCH_ASSOC);
+
+  //Перебbраем полученные данные
+  $zbx_ip_scan = array();
+  foreach ($zbx_ip_scan_0 as $item) {
+    $zbx_ip_scan[$item['ip']]['service'][$item['type']] = array(
+      'status' => $item['status'],
+      'lastup' => $item['lastup'],
+      'lasdown' => $item['lastdown'],
+      'port' => $item['port'],
+    );
+  }
+  unset($zbx_ip_scan_0);
+
+  // Затем выгребаем обнаруженные и сопостовляем обнаруженное хостам в наблюдении.
+  try {
+    $query = db_select('dservices', 'dip')
+        ->fields('dip', array('ip'));
+    $query->innerJoin('interface', 'inter', 'inter.ip = dip.ip');
+    $query->innerJoin('hosts', 'hst', 'hst.hostid = inter.hostid');
+    $query->addField('hst', 'host', 'host');
+    $query->addField('hst', 'name', 'host_name');
+    $query->addField('hst', 'description');
+    $res = $query->execute();
+
+    $zbx_ip_host_0 = $res->fetchAll(PDO::FETCH_ASSOC);
+  }
+  catch (Exception $exc) {
+    $msg = $exc->getMessage();
+    $code = "Code: " . $exc->getCode();
+    $file = "File: " . $exc->getFile();
+    $line = "Line: " . $exc->getLine();
+    $error_inf = "Trace: " . $exc->getTraceAsString();
+    $out_str = $msg . '<br>' . $code . '<br>' . $file . '<br>' . $line . '<br>' . $error_inf . '<br>';
+    drupal_set_message($out_str, 'error');
+    //echo $exc->getTraceAsString();
+  }
+
+  // Разгребаем полученные данные, т.к. на один IP адрес может приходится несколько разных названий
+  $zbx_ip_host = array();
+  foreach ($zbx_ip_host_0 as $item) {
+    $zbx_ip_host[$item['ip']]['hostname'][$item['host_name']] = $item['description'];
+  }
+
+  unset($zbx_ip_host_0);
+  unset($query);
+  unset($res);
+  db_set_active('default');
+
+  // Объеденяем 2 массива для консолидации данных
+  //$zbx_dip = array_merge($zbx_ip_scan, $zbx_ip_host);
+  $zbx_dip = array_merge_recursive($zbx_ip_scan, $zbx_ip_host);
+
+  unset($zbx_ip_scan);
+  unset($zbx_ip_host);
+
+  return $zbx_dip;
+}
+
+/**
+ *  Обращаемся в БД RackTables и вытякиваем оттуда информацию по хостам
+ */
+function zabbix_db2racktables_dbrktbl_get_hosts() {
+  /// 2. Подключаемся к базе RackTables 
+  db_set_active('racktables_db');
+  // Шерстим таблицу всех IP адресов ( т.е. есть диапазоны сегментов)
+  try {
+    $query = db_select('IPv4Address', 'ipadr')
+        ->fields('ipadr', array('ip', 'name', 'comment'));
+    $res = $query->execute();
+    $racktbl_ip = $res->fetchAllAssoc('ip', PDO::FETCH_ASSOC);
+  }
+  catch (Exception $exc) {
+    $msg = $exc->getMessage();
+    $code = "Code: " . $exc->getCode();
+    $file = "File: " . $exc->getFile();
+    $line = "Line: " . $exc->getLine();
+    $error_inf = "Trace: " . $exc->getTraceAsString();
+    $out_str = $msg . '<br>' . $code . '<br>' . $file . '<br>' . $line . '<br>' . $error_inf . '<br>';
+    drupal_set_message($out_str, 'error');
+    //echo $exc->getTraceAsString();
+    return false;
+  }
+
+  /// 3. Переключаемся на основную базу и начинаем сопостовление данных
+  db_set_active('default');
+  unset($query);
+  unset($res);
+
+  return $racktbl_ip;
+}
+
+/**
+ *  
+ */
+function zabbix_db2racktables_page() {
+  drupal_add_js('misc/ajax.js');
+  drupal_add_js('misc/form.js');
+  drupal_add_js('misc/collapse.js');
+
+  $content = '<h1>RackTables vs Zabbix </h1>';
+
+  $zbx_dip = zabbix_db2racktables_dbzbx_get_hosts();
+  $racktbl_ip = zabbix_db2racktables_dbrktbl_get_hosts();
+
+  $aIP = array();
+
+  // Для каждого IP  адреса из базы RackTables сопостовляем IP адрес в базе Zabbix
+  foreach ($racktbl_ip as $item) {
+    $ff = _racktables_ip4_int2bin($item['ip']); // Распаковываем IP адрес
+    $ip = inet_ntop($ff);  // Преобразуем в человеческий вид IP
+    // Если такой IP из RackTables есть в обнаружении Zabbix, тогда показать его статус из Zabbix
+    if (isset($zbx_dip[$ip]['service'])) {
+      $status = _get_zbx_status($zbx_dip[$ip]['service']);
+    }
+    else {
+      $status = 'Not discovery in Zabbix';
+    }
+
+    ($item['name'] != '') ? $rctbl_hname = $item['name'] : $rctbl_hname = '[X] NOT HOST [X]';
+
+    $host_name_inrack = '<span id="racktbl_name_' . $item['ip'] . '">' . $rctbl_hname . '</span>';
+    $fieldset = _zbx2rctbl_theme_fieldset('rtbl_' . $item['ip'], $host_name_inrack, $item['comment']);
+
+    //$aIP[$item['ip']] = array($ip, $host_name_inrack, $zbx_dip[$ip]['host_name'], $item['comment'], '-1-', $status);
+    // $aIP[$item['ip']] = array($ip, $fieldset, $zbx_dip[$ip]['hostname'], $status);
+    $aIP[$item['ip']] = array($ip, $fieldset, 'ZBX_NOT_FOUND', $status);
+  }
+
+  // Проводим сопостовление со стороны ZAbbix в RackTables.
+  // т.к. может быть есть в заббиксе но нет в racktables
+  foreach ($zbx_dip as $ip_human => $item) {
+    $long = ip2long($ip_human);
+
+    // Определяем названия хостов котрые навешаны в Zabbix на данный IP  адресс  
+    if (isset($item['hostname'])) {
+      foreach ($item['hostname'] as $hstname => $desc) {
+        (isset($racktbl_ip[$long])) ? $cmd = 'update' : $cmd = 'add';
+        ($desc !== '') ? $aDesc[] = $desc : $aDesc = NULL;
+        $url = url('racktables/ajax/sys', array(
+          'absolute' => TRUE,
+          'query' => array(
+            'op' => $cmd,
+            'ip' => $long,
+            'name' => $hstname,
+            'comment' => $desc,
+          ),));
+
+        switch ($cmd) {
+          case 'add':
+            $btnName = t('Add to RacTables');
+            $title = t('Add hostname and coment from Zabbix to RackTables'); // text over link ( a href)
+            break;
+          case 'update':
+            $btnName = t('Rename in в RacTables');
+            $title = t('Set @hostname as hostname in RackTables', array('@hostname' => $hstname)); // text over link ( a href)
+            break;
+
+          default:
+            break;
+        }
+
+        $button = '<div id="zbx_ip_' . $long . '">' . l('[<- ' . $btnName . ']', $url, array(
+              'attributes' => array(
+                'title' => $title,
+                'class' => array(
+                  'use-ajax')
+              )
+                )
+            ) . '</div>';
+        $aButton[] = _zbx2rctbl_theme_fieldset('zbx_' . $long, $hstname, $desc . '<br>' . $button);
+      }
+      $host_name_zbx = theme('item_list', array('items' => $aButton)); //implode('<br>', $host_n);
+      unset($aButton);
+
+      // Формируем описание хоста в Zabbix  
+      $description = theme('item_list', array('items' => $aDesc));
+      unset($aDesc);
+    }
+    else {
+
+      $url = url('racktables/ajax/sys', array(
+        'absolute' => TRUE,
+        'query' => array(
+          'op' => 'add',
+          'ip' => $long,
+          'name' => '[XYZ] IP-is-busy',
+          'comment' => t('IP adrdress is busy, by Zabbix discovery'),
+        ),));
+
+      $button = '<div id="zbx_ip_' . $long . '">' . l('[<-Makr as busy]', $url, array(
+            'attributes' => array(
+              'title' => t('Mark IP adrdress in RackTable as busy'),
+              'class' => array(
+                'use-ajax')
+            )
+              )
+          ) . '</div>';
+
+      $host_name_zbx = $button; // '-NONAME-';
+      $description = '';
+    }
+
+    // Если по данному IP  в RackTables отсутствуют записи, тогда сформировать кнопку  для добавления данных 
+    // из Zabbix ->RackTables
+    if (!isset($racktbl_ip[$long])) {
+      $dbg = 5;
+      $status = 'UNKNOW';
+      if (isset($item['service'])) {
+        $status = _get_zbx_status($item['service']);
+      }
+      $button = '<div id="racktbl_name_' . $long . '" class="messages warning">Not in RackTables.';
+      $button .='</div>';
+      //$aIP[$long] = array($key, $button, $host_name_zbx, '-2-', $description, $status);
+      $aIP[$long] = array($ip_human, $button, $host_name_zbx, $status);
+    }
+    $aIP[$long][2] = $host_name_zbx;
+    //$aIP[$long][4] = $description;
+  }
+  ksort($aIP);
+  //natsort($aIP);  
+  $header = array(
+    'The IP',
+    'Rack: Name',
+    'Zabbix: hosts',
+    //'Rack: Comment',
+    //'Zabbix: Comment',
+    'Zabbix: Discovery'
+  );
+
+  $content .= theme('table', array('header' => $header, 'rows' => $aIP));
+
+  return $content;
+}
+
+/**
+ *  Вспомогательная функция, для определения статуса из данных по обнаружению в Zabbix
+ *  формирует вывод статуса по каждому сервису 
+ * @param type $aServices
+ * @return string
+ */
+function _get_zbx_status($aSrv) {
+
+  /// 0. Сопостовляем числовые индентификаторы сервисов в Zabbix 
+  $aServices[3] = 'FTP';
+  $aServices[4] = 'HTTP';
+  $aServices[14] = 'HTTPS';
+  $aServices[12] = 'ICMP ping';
+  $aServices[7] = 'IMAP';
+  $aServices[1] = 'LDAP';
+  $aServices[6] = 'NNTP';
+  $aServices[5] = 'POP';
+  $aServices[2] = 'SMTP';
+  $aServices[10] = 'SNMPv1 агент';
+  $aServices[11] = 'SNMPv2 агент';
+  $aServices[13] = 'SNMPv3 агент';
+  $aServices[0] = 'SSH';
+  $aServices[8] = 'TCP';
+  $aServices[15] = 'Telnet';
+  $aServices[9] = 'Zabbix агент';
+
+  // Изначально считаем, что хост в дауне, если в ходе проверки сервисов выяснится что хотябы один из них живой
+  // следовательно хост не в дауне, и выставляем ему признак, что он живой    
+  // lastdown / lastup - unixtime
+  $alive = FALSE;
+
+  foreach ($aSrv as $key => $item) {
+    $service_name = $aServices[$key];
+    if ($item['port'] != 0) {
+      $port = $item['port'];
+    }
+    else {
+      $port = '';
+    }
+
+
+    $time = '';
+    if ($item['status'] == 0) {
+      $alive = TRUE;
+    }
+    switch ($item['status']) {
+      // 0 - значит живой, следовательно lastdown= 0 и не обходимо брать данные из lastup 
+      case 0:
+        $time = format_interval((time() - (int) $item['lastup']), 2);
+        $services[] = '<span style="color: green;"> [+] ' . $service_name . ' : ' . $time . '</span>';
+        break;
+      // 1 - значит не живой, следовательно lastup= 0 и не обходимо брать данные из lastdown
+      case 1:
+        $ago = format_interval((time() - (int) $item['lasdown']), 2);
+        //$time = date('Y-m-d H:i:s\Z', (int) $item['lasdown']);
+        $time = $ago;
+        $services[] = '<span style="color: red;"> [X] ' . $service_name .'(' .$port .'): ' . $time . '</span>';
+        break;
+      default:
+        break;
+    }
+  }
+
+  if ($alive) {
+    $status = '<div class="messages status">' . 'OnLine <br> ' . implode('<br>', $services) . '</div>';
+  }
+  else {
+    $status = '<div class="messages error">' . 'OffLine <br> ' . implode('<br>', $services) . '</div>';
+  }
+
+  return $status;
+}
+
+/**
+ *  Обработавыаем входящий AJAX
+ */
+function zabbix_db2racktables_ajax_router($arg1, $arg2) {
+  $db = 'stop';
+  if (empty($_POST['js'])) {
+    return;
+  }
+  $content = 'AJAX HELLO';
+  $url_param = drupal_get_query_parameters();
+
+  if ($url_param['name'] == '') {
+    $comment = 'from Zabbix via Drupal';
+  }
+  else {
+    $comment = $url_param['comment'];
+  }
+
+  switch ($url_param['op']) {
+    case 'add':
+      $result = zabbix_db2racktables_add_ip($url_param['ip'], $url_param['name'], $comment);
+      if ($result != false) {
+        $content = '<div class="messages status"> [+] Добавлено! <br>' . $url_param['name'] . '. </div>';
+        $commands[] = ajax_command_replace("#racktbl_name_" . $url_param['ip'], $content);
+      }
+      else {
+        $content = '[X] Возникла ошибка!';
+      }
+      break;
+
+    case 'update':
+      $result = zabbix_db2racktables_update_ip($url_param['ip'], $url_param['name'], $comment);
+      if ($result != false) {        
+        $content = '<div class="messages status"> [+] Обновлено на: <br>' . $url_param['name'] . '. </div>';
+      }
+      else {
+        $content = '[X] Возникла ошибка!';
+      }
+      $commands[] = ajax_command_replace("#fieldset-rtbl_" . $url_param['ip'], $content);
+      break;
+
+    default:
+      break;
+  }
+
+  ajax_deliver(array('#type' => 'ajax', '#commands' => $commands));
+  exit();
+}
+
+function zabbix_db2racktables_add_ip($ip, $hostname = '', $comment = '') {
+/// 2. Подключаемся к базе RackTables 
+  db_set_active('racktables_db');
+  // Шерстим таблицу всех IP адресов ( т.е. есть диапазоны сегментов)
+  try {
+    $query_insert = db_insert('IPv4Address')
+        ->fields(array(
+          'ip' => $ip,
+          'name' => $hostname,
+          'comment' => $comment,
+          'reserved' => 'no',
+        ))
+        ->execute();
+  }
+  catch (Exception $exc) {
+    $msg = $exc->getMessage();
+    $code = "Code: " . $exc->getCode();
+    $file = "File: " . $exc->getFile();
+    $line = "Line: " . $exc->getLine();
+    $error_inf = "Trace: " . $exc->getTraceAsString();
+    $out_str = $msg . '<br>' . $code . '<br>' . $file . '<br>' . $line . '<br>' . $error_inf . '<br>';
+    drupal_set_message($out_str, 'error');
+    //echo $exc->getTraceAsString();
+    db_set_active('default');
+    return false;
+  }
+  /// 3. Переключаемся на основную базу и начинаем сопостовление данных
+  db_set_active('default');
+  return TRUE;
+}
+
+function zabbix_db2racktables_update_ip($ip, $hostname = '', $comment = '') {
+/// 2. Подключаемся к базе RackTables 
+  db_set_active('racktables_db');
+  // Шерстим таблицу всех IP адресов ( т.е. есть диапазоны сегментов)
+  try {
+    $query = db_update('IPv4Address')
+        ->fields(array(
+          'name' => $hostname,
+          'comment' => $comment,
+          'reserved' => 'no',
+        ))
+        ->condition('ip', $ip)
+        ->execute();
+  }
+  catch (Exception $exc) {
+    $msg = $exc->getMessage();
+    $code = "Code: " . $exc->getCode();
+    $file = "File: " . $exc->getFile();
+    $line = "Line: " . $exc->getLine();
+    $error_inf = "Trace: " . $exc->getTraceAsString();
+    $out_str = $msg . '<br>' . $code . '<br>' . $file . '<br>' . $line . '<br>' . $error_inf . '<br>';
+    drupal_set_message($out_str, 'error');
+    //echo $exc->getTraceAsString();
+    db_set_active('default');
+    return false;
+  }
+  /// 3. Переключаемся на основную базу и начинаем сопостовление данных
+  db_set_active('default');
+  return TRUE;
+}
+
+function _racktables_ip4_int2bin($ip_int) {
+  return pack('N', $ip_int + 0);
+}
+
+function _racktables_ip4_bin2int($ip_bin) {
+  if (4 != strlen($ip_bin))
+    throw new InvalidArgException('ip_bin', $ip_bin, "Invalid binary IP");
+  $ret = array_first(unpack('N', $ip_bin));
+  if (PHP_INT_SIZE > 4 && $ret < 0)
+    $ret = $ret & 0xffffffff;
+  return $ret;
+}
+
+// Use this function only when you need to export binary ip out of PHP running context (e.g., DB)
+// !DO NOT perform arithmetic and bitwise operations with the result of this function!
+function _racktables_ip4_bin2db($ip_bin) {
+  $ip_int = ip4_bin2int($ip_bin);
+  return $ip_int >= 0 ? $ip_int : sprintf('%u', 0x00000000 + $ip_int);
+}
+
+function _racktables_ip_format($ip_bin) {
+  switch (strlen($ip_bin)) {
+    case 4: return _racktables_ip4_format($ip_bin);
+    case 16: return ip6_format($ip_bin);
+    default: throw new InvalidArgException('ip_bin', $ip_bin, "Invalid binary IP");
+  }
+}
+
+function _racktables_ip4_format($ip_bin) {
+  $ret = @inet_ntop($ip_bin);
+  if (4 == strlen($ip_bin)) {
+    if (is_inet_avail()) {
+      $ret = @inet_ntop($ip_bin);
+      if ($ret !== FALSE)
+        return $ret;
+    }
+    else
+      return implode('.', unpack('C*', $ip_bin));
+  }
+  throw new InvalidArgException('ip_bin', $ip_bin, "Invalid binary IP");
+}
+
+/**
+ * 
+ * 
+ * @param string $id uniq id for ID fieldset
+ * @param string $title Title of Fieldset
+ * @param string $content Content of message inner fieldset
+ * @return string  HTML prepare output fieldset 
+ */
+function _zbx2rctbl_theme_fieldset($id, $title, $content) {
+  $comment = t('Comment from @system:', array('@system' => 'ZBX||RACKTBL'));
+  
+  $fieldset = '<fieldset id="fieldset-' . $id . '" class="collapsible collapsed" style="width: 200px;">';
+  $fieldset .= '<legend><span class="fieldset-legend">' . $title . '</span></legend>';
+  $fieldset .= '<div class="fieldset-wrapper">';
+  $fieldset .= '<div class="fieldset-description"><b>' . $comment . '</b></div>';
+  $fieldset .= '<div style="font-style: italic;">';
+  $fieldset .= $content;
+  $fieldset .= '</div>';
+  $fieldset .= '</div>';
+  $fieldset .= '</fieldset>';
+
+  return $fieldset;
+}

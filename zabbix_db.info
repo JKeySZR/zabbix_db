@@ -1,0 +1,32 @@
+name = Zabbix DB
+description = Provide views acces to Zabbix DB data
+core = 7.x
+package = ZABBIX
+;php = 
+version = 0.1
+dependencies[] = views
+files[] = views/zabbix_db_handler_filter_boolean_operator.inc
+;files[] = views/zabbix_db_handler_field_templates.inc
+
+files[] = views/zabbix_db_handler_filter_groups_name.inc
+
+; tbl hosts
+files[] = views/zabbix_db_handler_field_hosts.inc
+
+files[] = views/zabbix_db_handler_field_hosts_status.inc
+files[] = views/zabbix_db_handler_filter_hosts_status.inc
+
+; tbl history
+files[] = views/zabbix_db_handler_field_history.inc
+
+; tbl items handlers 
+files[] = views/zabbix_db_handler_field_items_type.inc
+files[] = views/zabbix_db_handler_filter_items_type.inc
+
+files[] = views/zabbix_db_handler_field_items_value_type.inc
+files[] = views/zabbix_db_handler_filter_items_value_type.inc
+
+files[] = views/zabbix_db_handler_field_items_state.inc
+files[] = views/zabbix_db_handler_filter_items_state.inc
+
+;configure = 

@@ -1,0 +1,9 @@
+name = zabbix_mng
+description = Zabbix RW modules
+core = 7.x
+package = ZABBIX
+;php = 
+version = 0.1
+;dependencies[] = 
+;files[] = 
+;configure = 

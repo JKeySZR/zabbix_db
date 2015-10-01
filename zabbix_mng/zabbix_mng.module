@@ -1,0 +1,373 @@
+<?php
+
+/**
+ *  Вспомогательная функция котороя проверяет возможность подключиться к БД 
+ *  ZABBIX  и возвращает его имя settings.php
+ * @return string Имя БД для подключения db_set_active(@return)
+ */
+function zabbix_mng_zbxdb() {
+  // 1.   Подключаемся к базе Zabbix и выдираем все IP адреса из обнаружения 
+  $zbxdb_connect = variable_get('zabbix_db_connect', false);
+  // if not setup connection , when  stop
+  if (!$zbxdb_connect) {
+    $content = 'Upsss... you not set ZABBIX connection name.';
+    $content .= l('Set connection name to ZABBIX DB', 'admin/config/system/zabbix/db/settings');
+    $matches[] = $content;
+    return $content;
+  }
+  return $zbxdb_connect;
+}
+
+/**
+ * Implements hook_menu();
+ */
+function zabbix_mng_menu() {
+  $items['zabbix_mng/items'] = array(
+    'title' => 'Show status info intems ',
+    'description' => 'Show statistics info about DB tables',
+    'page callback' => 'zabbix_mng_page',
+    //'page arguments' => array(0, 1, 2, 3),
+    'access arguments' => TRUE, //array('zabbix_db_access'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  $items['zabbix_mng/items2'] = array(
+    'title' => 'Show status info intems ',
+    'description' => 'Show statistics info about DB tables',
+    'page callback' => 'DRUPAL_GET_FORM',
+    'page arguments' => array('zabbix_mng_hosts_form'),
+    'access arguments' => TRUE, //array('zabbix_db_access'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  $items['zabbix_mng/hosts/notsupported'] = array(
+    'title' => 'Show host which notsupported items',
+    'description' => 'Show host which notsupported items',
+    'page callback' => 'zabbix_mng_hosts_state_notsupported_page',
+    //'page arguments' => array('zabbix_mng_hosts_form'),
+    'access arguments' => TRUE, //array('zabbix_db_access'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  
+  $items['zabbix_mng/items/%/notsupported'] = array(
+    'title' => 'Show host`s NotSupported items',    
+    'page callback' => 'zabbix_mng_items_state_notsupported_page',
+    'page arguments' => array(2), // 2 -hostid 3 -
+    'access arguments' => TRUE, //array('zabbix_db_access'),
+    'type' => MENU_CALLBACK,
+  );  
+  
+  
+
+  $items['zabbix_mng/autocomplite/hosts'] = array(
+    'page callback' => 'zabbix_mng_autocomplete_hosts',
+    'access arguments' => TRUE, //array('zabbix_db_access'),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+function zabbix_mng_page() {
+  $content = 'Hello HGP';
+  $content .= drupal_prepare_form('zabbix_mng_hosts_form');
+  return $content;
+}
+
+/**
+ * Implements hook_forms();
+ */
+function zabbix_mng_hosts_form($form, &$form_state) {
+  $form = array();
+
+  $form['hosid'] = array(
+    '#title' => t('HostID'),
+    '#type' => 'textfield',
+    '#autocomplete_path' => 'zabbix_mng/autocomplite/hosts',
+  );
+
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => 'Find items >>',
+    '#submit' => array('zabbix_mng_hosts_submit'),
+      //'#validate' => array('form_example_tutorial_8_next_validate'),
+  );
+  $dbg = 0;
+  // If the form has been submitted, output something related to the submission
+  if (!empty($form_state['values']['hosid'])) {
+    $form['submission'] = array(
+      '#markup' => zabbix_mng_host_items_hosts($form_state['values']['hosid'])
+        //'#markup' => 'Uga-uga-chaga'
+    );
+  }
+
+  return $form;
+}
+
+function zabbix_mng_hosts_submit($form, &$form_state) {
+  $form_state['rebuild'] = TRUE;
+  $dbg = 0;
+  //$form_state['redirect'] = 'http://ya.ru';  
+  drupal_set_message('BURATINKO!');
+  //return 'BURATINO!';
+}
+
+function zabbix_mng_autocomplete_hosts($string) {
+  $matches = array();
+
+  // 1.   Подключаемся к базе Zabbix и выдираем все IP адреса из обнаружения 
+  $zbxdb_connect = variable_get('zabbix_db_connect', false);
+  // if not setup connection , when  stop
+  if (!$zbxdb_connect) {
+    $content = 'Upsss... you not set connection name.';
+    $content .= l('Set connection name to ZABBIX DB', 'admin/config/system/zabbix/db/settings');
+    $matches[] = $content;
+    drupal_json_output($matches);
+    exit();
+  }
+
+  db_set_active($zbxdb_connect);
+
+  // SELECT hostid,host,name FROM zabbix.hosts WHERE status<>3;
+  $dbg = 0;
+  $zbx_ip_scan_0 = db_select('hosts', 'hst')
+      ->fields('hst', array('hostid', 'host', 'name'))
+      ->condition('status', 3, '<>')
+      ->condition('host', '%' . db_like($string) . '%', 'LIKE')
+      ->execute()
+      ->fetchAll(PDO::FETCH_ASSOC);
+  db_set_active('default');
+
+  //Перебbраем полученные данные
+  $matches = array();
+  foreach ($zbx_ip_scan_0 as $item) {
+    $str = $item['hostid'] . " - " . $item['host'] . " - " . $item['name'];
+    $matches[$item['hostid']] = check_plain($str);
+  }
+  unset($zbx_ip_scan_0);
+
+  // add matches to $matches  
+//  foreach ($return as $row) {
+//    $matches[$row->city] = check_plain($row->city);
+//  }
+  // return for JS
+  drupal_json_output($matches);
+}
+
+/**
+ * Рендерим  страницы метрик выбранного узла
+ * @param type $hostid
+ */
+function zabbix_mng_host_items_hosts($hostid) {
+
+  // 1.   Подключаемся к базе Zabbix и выдираем все IP адреса из обнаружения 
+  $zbxdb_connect = variable_get('zabbix_db_connect', false);
+  // if not setup connection , when  stop
+  if (!$zbxdb_connect) {
+    $content = 'Upsss... you not set ZABBIX connection name.';
+    $content .= l('Set connection name to ZABBIX DB', 'admin/config/system/zabbix/db/settings');
+    $matches[] = $content;
+    return $content;
+  }
+
+  db_set_active($zbxdb_connect);
+  // SELECT hostid,host,name FROM zabbix.hosts WHERE status<>3;
+  $dbg = 0;
+  $query = db_select('items', 'it')
+      ->fields('it')
+      ->condition('hostid', $hostid, '=');
+
+  $result = $query->execute()
+      ->fetchAll(PDO::FETCH_ASSOC);
+  db_set_active('default');
+
+  //Перебbраем полученные данные
+  $matches = array();
+  $aRows = array();
+  foreach ($result as $row) {
+    $aRows[] = $row;
+//    $aRows[] = array(
+//    );
+    // $matches[$item['hostid']] = check_plain($str);
+  }
+  unset($query);
+  unset($result);
+
+
+  // Заголовок таблицы
+  $header = array(
+    'itemid',
+    'type',
+    'snmp_community',
+    'snmp_oid',
+    'hostid',
+    'name',
+    'key_',
+    'delay',
+    'history',
+    'trends',
+    'status',
+    'value_type',
+    'trapper_hosts',
+    'units',
+    'multiplier',
+    'delta',
+    'snmpv3_securityname',
+    'snmpv3_securitylevel',
+    'snmpv3_authpassphrase',
+    'snmpv3_privpassphrase',
+    'formula',
+    'error',
+    'lastlogsize',
+    'logtimefmt',
+    'templateid',
+    'valuemapid',
+    'delay_flex',
+    'params',
+    'ipmi_sensor',
+    'data_type',
+    'authtype',
+    'username',
+    'password',
+    'publickey',
+    'privatekey',
+    'mtime',
+    'flags',
+    'interfaceid',
+    'port',
+    'description',
+    'inventory_link',
+    'lifetime',
+    'snmpv3_authprotocol',
+    'snmpv3_privprotocol',
+    'state',
+    'snmpv3_contextname',
+    'evaltype',
+  );
+
+
+  $table_element = array(
+    '#theme' => 'table',
+    '#header' => $header,
+    '#rows' => $aRows,
+    '#empty' => t('No result was found'),
+      //'#prefix' => '<div style="width: 100%; border: 2px dashed black"><h2 >' . $legen_msg . '</h2>',
+      //'#suffix' => '</div>',
+  );
+  $content .= render($table_element);
+
+  return $content;
+}
+
+function zabbix_mng_hosts_state_notsupported_page() {
+//-- Список хостов с количеством неподдерживаемых метрик упорядоченных по убыванию
+//select 
+// hst.hostid, hst.host host, COUNT(it.itemid) CNT
+//from 
+// items it, hosts hst
+//where 
+// it.hostid = hst.hostid AND 
+// it.state=1
+//Group by it.hostid
+//ORDER BY CNT DESC;   
+
+
+  // 1.   Подключаемся к базе Zabbix 
+  $zbxdb_connect = zabbix_mng_zbxdb();
+  db_set_active($zbxdb_connect);
+
+  // SELECT hostid,host,name FROM zabbix.hosts WHERE status<>3;
+  $query = db_select('hosts', 'hst')
+      ->fields('hst', array('hostid', 'host', 'name'))
+      ->condition('state', 1, '=');
+  $query->innerJoin('items', 'it', 'it.hostid = hst.hostid');
+  $query->addExpression('COUNT(it.itemid)', 'cnt');
+  $query->groupBy('it.hostid');
+  $query->orderBy('cnt', 'DESC');
+
+
+  $result = $query->execute()
+      ->fetchAll(PDO::FETCH_ASSOC);
+  db_set_active('default');
+
+  $aRows = array();
+  foreach ($result as $row) {
+    $aRows[] = $row;
+  }
+  // Заголовок таблицы
+  $header = array(
+    'hostid',
+    'host',
+    'name',
+    'cnt',
+  );
+
+  $table_element = array(
+    '#theme' => 'table',
+    '#header' => $header,
+    '#rows' => $aRows,
+    '#empty' => t('No result was found'),
+      //'#prefix' => '<div style="width: 100%; border: 2px dashed black"><h2 >' . $legen_msg . '</h2>',
+      //'#suffix' => '</div>',
+  );
+  $content .= render($table_element);
+
+  return $content;
+}
+
+function zabbix_mng_items_state_notsupported_page($hostid){
+//select 
+//itemid, type, name,key_, delay,history, trends, templateid, error, status 
+//from items
+//where state=1 AND hostid=10570;
+
+  // 1.   Подключаемся к базе Zabbix 
+  $zbxdb_connect = zabbix_mng_zbxdb();
+  db_set_active($zbxdb_connect);
+
+  $query = db_select('items', 'it')
+      ->fields('it', array('itemid', 'type', 'name','key_','snmp_oid','delay','error','status'))
+      ->condition('state', 1, '=')
+      ->condition('hostid', $hostid, '=');
+  
+  $result = $query->execute()
+      ->fetchAll(PDO::FETCH_ASSOC);
+  db_set_active('default');
+  
+ if (count($result) == 0){
+   $content = 'Nichego net in query';
+   return $query;
+ }
+ 
+ $zbx_type = zabbix_db_define_type();
+ 
+  $aRows = array();
+  foreach ($result as $row) {
+    $row['status'] = $zbx_type['items']['status'][$row['status']];
+    $row['type'] = $zbx_type['items']['type'][$row['type']];
+    $aRows[] = $row;
+  }
+  // Заголовок таблицы
+  $header = array(
+    'itemid',
+    'type',
+    'name',
+    'key',
+    'snmp_oid',
+    'delay',
+    'error',
+    'status',
+  );
+
+  $table_element = array(
+    '#theme' => 'table',
+    '#header' => $header,
+    '#rows' => $aRows,
+    '#empty' => t('No result was found'),
+      //'#prefix' => '<div style="width: 100%; border: 2px dashed black"><h2 >' . $legen_msg . '</h2>',
+      //'#suffix' => '</div>',
+  );
+  $content .= render($table_element);
+
+  return $content;    
+}

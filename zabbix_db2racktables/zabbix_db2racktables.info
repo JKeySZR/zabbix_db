@@ -1,0 +1,9 @@
+name = Zabbix_DB to RackTables
+description = Provide option Zabbix_DB hosts sync to racktables
+core = 7.x
+package = ZABBIX
+;php = 
+version = 0.1
+;dependencies[] = 
+;files[] = 
+;configure = 
