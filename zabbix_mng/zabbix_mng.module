@@ -27,7 +27,7 @@ function zabbix_mng_menu() {
     'description' => 'Show statistics info about DB tables',
     'page callback' => 'zabbix_mng_page',
     //'page arguments' => array(0, 1, 2, 3),
-    'access arguments' => TRUE, //array('zabbix_db_access'),
+    'access arguments' => array('zabbix_db_access'),
     'type' => MENU_NORMAL_ITEM,
   );
 
@@ -36,7 +36,7 @@ function zabbix_mng_menu() {
     'description' => 'Show statistics info about DB tables',
     'page callback' => 'DRUPAL_GET_FORM',
     'page arguments' => array('zabbix_mng_hosts_form'),
-    'access arguments' => TRUE, //array('zabbix_db_access'),
+    'access arguments' => array('zabbix_db_access'),
     'type' => MENU_NORMAL_ITEM,
   );
 
@@ -45,7 +45,7 @@ function zabbix_mng_menu() {
     'description' => 'Show host which notsupported items',
     'page callback' => 'zabbix_mng_hosts_state_notsupported_page',
     //'page arguments' => array('zabbix_mng_hosts_form'),
-    'access arguments' => TRUE, //array('zabbix_db_access'),
+    'access arguments' => array('zabbix_db_access'),
     'type' => MENU_NORMAL_ITEM,
   );
   
@@ -53,7 +53,7 @@ function zabbix_mng_menu() {
     'title' => 'Show host`s NotSupported items',    
     'page callback' => 'zabbix_mng_items_state_notsupported_page',
     'page arguments' => array(2), // 2 -hostid 3 -
-    'access arguments' => TRUE, //array('zabbix_db_access'),
+    'access arguments' => array('zabbix_db_access'),
     'type' => MENU_CALLBACK,
   );  
   
@@ -61,7 +61,7 @@ function zabbix_mng_menu() {
 
   $items['zabbix_mng/autocomplite/hosts'] = array(
     'page callback' => 'zabbix_mng_autocomplete_hosts',
-    'access arguments' => TRUE, //array('zabbix_db_access'),
+    'access arguments' => array('zabbix_db_access'),
     'type' => MENU_CALLBACK,
   );
 
